@@ -50,7 +50,7 @@ Proje, katmanlı mimari yapısında **MERN Stack** (MongoDB yerine MySQL kullan�
 
 ## 📸 Ekran Görüntüleri ve İşleyiş
 
-*(Buraya projenizden ekran görüntüleri ekleyebilirsiniz, örneğin:)*
+*(ekran görüntülerini uygun zamanda ekleyeceğim.)*
 * *Giriş Ekranı*
 * *Ders Programı Tablosu*
 * *Otomatik Oluşturulan Sınav Oturma Planı*
