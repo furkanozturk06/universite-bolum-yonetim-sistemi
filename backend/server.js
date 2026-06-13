@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2');
@@ -5,17 +7,40 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 const app = express();
-const PORT = 3001;
-const ***REMOVED***;
+const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Kritik secret: yoksa uygulama BAŞLAMAMALI (sessiz fallback yok)
+const SECRET_KEY = process.env.JWT_SECRET;
+if (!SECRET_KEY) {
+    console.error('HATA: JWT_SECRET ortam değişkeni tanımlı değil. Uygulama başlatılamıyor.');
+    process.exit(1);
+}
+
+// JWT imzalama/doğrulama algoritması (zayıf/none algoritma saldırılarını engellemek için sabit)
+const JWT_ALGORITHM = 'HS256';
+
+// CORS: env tabanlı whitelist (dev için localhost varsayılanı)
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // origin yoksa (örn. curl, mobil uygulama, same-origin) izin ver
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('CORS politikası tarafından engellendi'));
+    }
+}));
 app.use(express.json());
 
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'yeni_sifren', // kendi şifreni yaz
-    database: 'ders_programi'
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'ders_programi'
 });
 
 db.connect(err => {
@@ -39,7 +64,7 @@ app.post('/api/login', (req, res) => {
 
         if (!match) return res.status(401).json({ message: 'Şifre hatalı' });
 
-        const token = jwt.sign({ username: user.kullanici_adi, role: user.rol }, SECRET_KEY, { expiresIn: '2h' });
+        const token = jwt.sign({ username: user.kullanici_adi, role: user.rol }, SECRET_KEY, { expiresIn: '2h', algorithm: JWT_ALGORITHM });
         res.json({ token, role: user.rol, username: user.kullanici_adi });
     });
 });
@@ -50,7 +75,7 @@ function authenticateToken(req, res, next) {
     const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.sendStatus(401);
 
-    jwt.verify(token, SECRET_KEY, (err, user) => {
+    jwt.verify(token, SECRET_KEY, { algorithms: [JWT_ALGORITHM] }, (err, user) => {
         if (err) return res.sendStatus(403);
         req.user = user;
         next();
@@ -138,7 +163,7 @@ app.put('/dersler/:id', authenticateToken, authorizeRoles('sekreter', 'bolum_bas
     );
 });
 
-app.put('/api/dersler/:id/ogrenci-sayisi', authenticateToken, (req, res) => {
+app.put('/api/dersler/:id/ogrenci-sayisi', authenticateToken, authorizeRoles('sekreter', 'bolum_baskani'), (req, res) => {
     db.query('UPDATE dersler SET ogrenciSayisi = ? WHERE id = ?', [req.body.ogrenciSayisi, req.params.id], err => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Öğrenci sayısı güncellendi.' });
@@ -251,16 +276,31 @@ app.get('/api/sinav-programi/ogretim', authenticateToken, authorizeRoles('ogreti
 app.put('/api/ogrenci-ders/:id/not', authenticateToken, authorizeRoles('ogretim_elemani'), (req, res) => {
     const { id } = req.params;
     const { notu } = req.body;
+    const ogretmen = req.user.username;
 
+    // Önce kaydın gerçekten bu öğretim elemanının dersine ait olup olmadığını doğrula (IDOR koruması)
     db.query(
-        'UPDATE ogrenci_ders SET notu = ? WHERE id = ?',
-        [notu, id],
-        (err, result) => {
+        `SELECT od.id FROM ogrenci_ders od
+         JOIN dersler d ON od.ders_id = d.id
+         WHERE od.id = ? AND d.ogretmen = ?`,
+        [id, ogretmen],
+        (err, sahiplik) => {
             if (err) return res.status(500).json({ error: err.message });
-            if (result.affectedRows === 0) {
-                return res.status(404).json({ message: 'Kayıt bulunamadı' });
+            if (sahiplik.length === 0) {
+                return res.status(403).json({ message: 'Bu kaydı güncelleme yetkiniz yok.' });
             }
-            res.json({ message: 'Not güncellendi' });
+
+            db.query(
+                'UPDATE ogrenci_ders SET notu = ? WHERE id = ?',
+                [notu, id],
+                (err, result) => {
+                    if (err) return res.status(500).json({ error: err.message });
+                    if (result.affectedRows === 0) {
+                        return res.status(404).json({ message: 'Kayıt bulunamadı' });
+                    }
+                    res.json({ message: 'Not güncellendi' });
+                }
+            );
         }
     );
 });
@@ -268,13 +308,26 @@ app.put('/api/ogrenci-ders/:id/not', authenticateToken, authorizeRoles('ogretim_
 // Öğretim üyesi kendi dersine kayıtlı öğrencileri görebilsin
 app.get('/api/ogrenci-ders/:dersId', authenticateToken, authorizeRoles('ogretim_elemani'), (req, res) => {
     const dersId = req.params.dersId;
+    const ogretmen = req.user.username;
 
+    // Önce dersin gerçekten bu öğretim elemanına ait olduğunu doğrula (IDOR koruması)
     db.query(
-        'SELECT od.id, o.ad_soyad, o.ogrenci_no, od.notu, od.ogrenci_id FROM ogrenci_ders od JOIN ogrenciler o ON od.ogrenci_id = o.id WHERE od.ders_id = ?',
-        [dersId],
-        (err, results) => {
+        'SELECT id FROM dersler WHERE id = ? AND ogretmen = ?',
+        [dersId, ogretmen],
+        (err, sahiplik) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json(results);
+            if (sahiplik.length === 0) {
+                return res.status(403).json({ message: 'Bu dersin öğrencilerini görüntüleme yetkiniz yok.' });
+            }
+
+            db.query(
+                'SELECT od.id, o.ad_soyad, o.ogrenci_no, od.notu, od.ogrenci_id FROM ogrenci_ders od JOIN ogrenciler o ON od.ogrenci_id = o.id WHERE od.ders_id = ?',
+                [dersId],
+                (err, results) => {
+                    if (err) return res.status(500).json({ error: err.message });
+                    res.json(results);
+                }
+            );
         }
     );
 });

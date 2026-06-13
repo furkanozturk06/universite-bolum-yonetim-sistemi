@@ -1,0 +1,33 @@
+# Bağımlılıklar
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Ortam değişkenleri / secret'lar
+.env
+.env.*
+!.env.example
+
+# Build çıktıları
+build/
+dist/
+frontend/build/
+frontend/dist/
+
+# Veritabanı dump'ları (PII + şifre hash'i içerebilir)
+# Not: schema-only ders_programi.sql repoda kalır, veri içeren dump'lar ignore edilir.
+*.sql.gz
+*-data.sql
+*_data.sql
+*.dump
+
+# Loglar
+logs/
+*.log
+npm-debug.log*
+
+# OS / editör
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
